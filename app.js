@@ -11,7 +11,7 @@
 const CONFIG = window.TEAM_MANAGER_SUPABASE || {};
 const SUPABASE_URL = CONFIG.url || '';
 const SUPABASE_KEY = CONFIG.publishableKey || '';
-const supabase = (SUPABASE_URL && SUPABASE_KEY && window.supabase && !SUPABASE_URL.includes('HIER_'))
+const supabaseClient = (SUPABASE_URL && SUPABASE_KEY && window.supabase && !SUPABASE_URL.includes('HIER_'))
   ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
     })
@@ -113,10 +113,10 @@ function touchMatch(m){
 }
 function touchAllTeams(){teamRows().forEach(r=>enqueue('teams','upsert',r.id,r))}
 
-async function getSession(){if(!supabase)return null;const {data,error}=await supabase.auth.getSession();if(error)throw error;return data.session}
+async function getSession(){if(!supabaseClient)return null;const {data,error}=await supabaseClient.auth.getSession();if(error)throw error;return data.session}
 function withUser(payload,userId){const {updated_at,version,deleted_at,...clean}=payload||{};return {...clean,user_id:userId,device_id:deviceId,deleted_at:null}}
 async function fetchRemoteRow(op,userId){
-  const {data,error}=await supabase.from(op.table).select('*').eq('id',op.recordId).eq('user_id',userId).maybeSingle();
+  const {data,error}=await supabaseClient.from(op.table).select('*').eq('id',op.recordId).eq('user_id',userId).maybeSingle();
   if(error)throw error; return data;
 }
 function rememberMeta(table,row){db.meta[table]=db.meta[table]||{};db.meta[table][row.id]={version:Number(row.version||0),updated_at:row.updated_at||null,deleted_at:row.deleted_at||null,sort_order:row.sort_order??null}}
@@ -150,7 +150,7 @@ async function applyRemoteToLocal(table,row){
 }
 
 async function guardedUpdate(op,userId,changes,expectedVersion){
-  let q=supabase.from(op.table).update(changes).eq('id',op.recordId).eq('user_id',userId);
+  let q=supabaseClient.from(op.table).update(changes).eq('id',op.recordId).eq('user_id',userId);
   if(expectedVersion>0) q=q.eq('version',expectedVersion);
   const {data,error}=await q.select('*').maybeSingle();
   if(error)throw error;
@@ -184,7 +184,7 @@ async function pushOperation(op,userId){
 
   const row=withUser(op.payload,userId);
   if(!remote){
-    const {data,error}=await supabase.from(op.table).insert(row).select('*').single();
+    const {data,error}=await supabaseClient.from(op.table).insert(row).select('*').single();
     if(error){
       // A concurrent insert with the same id may have won between fetch and insert.
       const latest=await fetchRemoteRow(op,userId).catch(()=>null);
@@ -202,7 +202,7 @@ async function pushOperation(op,userId){
 }
 
 async function pullTable(table,userId){
-  const {data,error}=await supabase.from(table).select('*').eq('user_id',userId);
+  const {data,error}=await supabaseClient.from(table).select('*').eq('user_id',userId);
   if(error)throw error;
   for(const row of (data||[])){
     const pending=queue.find(q=>q.table===table&&q.recordId===row.id);
@@ -227,7 +227,7 @@ function queuePriority(op){
 }
 async function syncAll(){
   if(syncing)return;
-  if(!supabase){setSyncStatus('Supabase nicht konfiguriert');return}
+  if(!supabaseClient){setSyncStatus('Supabase nicht konfiguriert');return}
   if(!navigator.onLine){setSyncStatus(`Offline · ${queue.length} Änderung${queue.length===1?'':'en'} wartet`);return}
   let session;try{session=await getSession()}catch(e){console.error(e);setSyncStatus('Verbindung fehlgeschlagen');return}
   if(!session){setSyncStatus('Bitte anmelden');return}
@@ -250,7 +250,7 @@ function switchUserContext(user){
   render();
 }
 async function initialPull(){
-  if(!supabase)return;
+  if(!supabaseClient)return;
   let session=await getSession();
   if(!session){switchUserContext(null);setSyncStatus('Bitte anmelden');return}
   switchUserContext(session.user);
@@ -259,7 +259,7 @@ async function initialPull(){
 }
 
 async function openLogin(){
-  if(!supabase)return alert('Bitte zuerst supabase-config.js mit Project URL und Publishable Key ausfüllen.');
+  if(!supabaseClient)return alert('Bitte zuerst supabase-config.js mit Project URL und Publishable Key ausfüllen.');
   const session=await getSession().catch(()=>null);
   if(session){
     openModal(`<h2>Angemeldet</h2><div class="card"><b>${esc(session.user.email||'Benutzer')}</b><div class="sub">Lokale Daten sind diesem Konto getrennt zugeordnet.</div></div><div class="actions"><button class="secondary" onclick="syncAll()">Jetzt synchronisieren</button><button class="danger" onclick="logout()">Abmelden</button><button onclick="closeModal()">Schließen</button></div>`);return;
@@ -268,17 +268,17 @@ async function openLogin(){
 }
 async function login(){
   const email=document.getElementById('loginEmail').value.trim(),password=document.getElementById('loginPassword').value;
-  const {data,error}=await supabase.auth.signInWithPassword({email,password});if(error)return alert(error.message);
+  const {data,error}=await supabaseClient.auth.signInWithPassword({email,password});if(error)return alert(error.message);
   closeModal();switchUserContext(data.user);await syncAll();
 }
 async function signup(){
   const email=document.getElementById('loginEmail').value.trim(),password=document.getElementById('loginPassword').value;
   if(!email||password.length<6)return alert('Bitte E-Mail und ein Passwort mit mindestens 6 Zeichen eingeben.');
-  const {data,error}=await supabase.auth.signUp({email,password,options:{data:{display_name:email.split('@')[0]}}});if(error)return alert(error.message);
+  const {data,error}=await supabaseClient.auth.signUp({email,password,options:{data:{display_name:email.split('@')[0]}}});if(error)return alert(error.message);
   if(data.session){closeModal();switchUserContext(data.user);await syncAll()}else alert('Konto angelegt. Falls E-Mail-Bestätigung aktiviert ist, bestätige zuerst die Nachricht von Supabase und melde dich danach an.');
 }
 async function logout(){
-  if(supabase) await supabase.auth.signOut();
+  if(supabaseClient) await supabaseClient.auth.signOut();
   switchUserContext(null);setSyncStatus('Abgemeldet · Gastmodus');closeModal();
 }
 function importGuestData(){
@@ -342,8 +342,8 @@ function saveTeam(i){const old=db.league[i],name=document.getElementById('tn').v
 
 render();
 (async()=>{
-  if(!supabase){setSyncStatus('Supabase nicht konfiguriert');return}
-  supabase.auth.onAuthStateChange((_event,session)=>{
+  if(!supabaseClient){setSyncStatus('Supabase nicht konfiguriert');return}
+  supabaseClient.auth.onAuthStateChange((_event,session)=>{
     setTimeout(()=>{
       if(session){if(ownerKey!==session.user.id)switchUserContext(session.user);syncAll()}
       else {if(ownerKey!=='guest')switchUserContext(null);setSyncStatus('Bitte anmelden')}

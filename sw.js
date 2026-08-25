@@ -1,4 +1,4 @@
-const CACHE = 'team-manager-shell-v5';
+const CACHE = 'team-manager-shell-v6';
 const SHELL = ['./','./index.html','./app.js','./supabase-config.js','./manifest.webmanifest','./icon-180.png','./icon-192.png','./icon-512.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL)));
