@@ -8,7 +8,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Team Manager">
-<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="apple-touch-icon" sizes="180x180" href="./icon-180.png">
 <title>Team Manager</title>
 <style>
 :root{--bg:#f4f6f8;--card:#fff;--text:#101828;--muted:#667085;--line:#e4e7ec;--accent:#176b4d;--accent2:#0d5139;--danger:#c62828;--shadow:0 8px 28px #10182812}
@@ -50,121 +50,11 @@ table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;p
 <div id="modal" class="modal hidden" onclick="if(event.target===this)closeModal()"><div class="sheet" id="sheet"></div></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="./supabase-config.js"></script>
+<script src="./app.js"></script>
 <script>
-const SUPABASE_URL = window.TEAM_MANAGER_SUPABASE?.url || '';
-const SUPABASE_KEY = window.TEAM_MANAGER_SUPABASE?.publishableKey || '';
-const supabase = (SUPABASE_URL && SUPABASE_KEY && window.supabase)
-  ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY)
-  : null;
-const KEY='team-manager-v1';
-const initial={teamName:'Mein Fußballteam',season:'2026/27',league:['Team 1','Team 2','Team 3','Team 4','Team 5','Team 6','Team 7','Team 8','Team 9','Team 10','Team 11','Team 12'],players:[],matches:[]};
-let db=JSON.parse(localStorage.getItem(KEY)||'null')||structuredClone(initial);
-let syncTimer=null, syncing=false, remoteReady=false;
-function setSyncStatus(text){const el=document.getElementById('syncStatus');if(el)el.textContent=text}
-function save(){localStorage.setItem(KEY,JSON.stringify(db));render();scheduleSync()}
-function scheduleSync(){clearTimeout(syncTimer);syncTimer=setTimeout(syncToSupabase,500)}
-async function syncToSupabase(){
-  if(!supabase){setSyncStatus('Supabase noch nicht eingerichtet');return}
-  const {data:{session}}=await supabase.auth.getSession();
-  if(!session){setSyncStatus('Bitte anmelden');return}
-  if(!navigator.onLine){setSyncStatus('Offline – Änderungen lokal gespeichert');return}
-  syncing=true;setSyncStatus('Synchronisiere …');
-  try{
-    const teams=db.league.map((name,i)=>({name,sort_order:i}));
-    const players=db.players.map((p,i)=>({id:p.id,name:p.name,number:p.number===''?null:+p.number,position:p.position,sort_order:i,active:true}));
-    const matches=db.matches.map(m=>({id:m.id,opponent:m.opponent,match_date:m.date,match_type:m.type,team_goals:m.goalsFor,opponent_goals:m.goalsAgainst}));
-    const apps=[], goals=[];
-    db.matches.forEach(m=>(m.events||[]).forEach((e,idx)=>{
-      if(e.type==='app') apps.push({match_id:m.id,player_id:e.playerId});
-      if(e.type==='goal') goals.push({id:crypto.randomUUID(),match_id:m.id,player_id:e.playerId});
-    }));
-    await supabase.from('appearances').delete().neq('id','00000000-0000-0000-0000-000000000000');
-    await supabase.from('goals').delete().neq('id','00000000-0000-0000-0000-000000000000');
-    await supabase.from('matches').delete().neq('id','00000000-0000-0000-0000-000000000000');
-    await supabase.from('players').delete().neq('id','00000000-0000-0000-0000-000000000000');
-    await supabase.from('teams').delete().neq('id','00000000-0000-0000-0000-000000000000');
-    if(teams.length) await supabase.from('teams').insert(teams);
-    if(players.length) await supabase.from('players').insert(players);
-    if(matches.length) await supabase.from('matches').insert(matches);
-    if(apps.length) await supabase.from('appearances').insert(apps);
-    if(goals.length) await supabase.from('goals').insert(goals);
-    setSyncStatus('✓ Synchronisiert');
-  }catch(e){console.error(e);setSyncStatus('Synchronisierung fehlgeschlagen – Daten bleiben lokal')}
-  finally{syncing=false}
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(console.error));
 }
-async function loadFromSupabase(){
-  if(!supabase)return;
-  const {data:{session}}=await supabase.auth.getSession();if(!session)return;
-  setSyncStatus('Lade Teamdaten …');
-  try{
-    const [t,p,m,a,g]=await Promise.all([
-      supabase.from('teams').select('*').order('sort_order'),
-      supabase.from('players').select('*').order('sort_order'),
-      supabase.from('matches').select('*').order('match_date'),
-      supabase.from('appearances').select('*'),
-      supabase.from('goals').select('*')
-    ]);
-    if(t.error||p.error||m.error||a.error||g.error) throw (t.error||p.error||m.error||a.error||g.error);
-    if((t.data||[]).length||(p.data||[]).length||(m.data||[]).length){
-      const byMatch={};
-      (m.data||[]).forEach(x=>byMatch[x.id]={id:x.id,date:x.match_date,type:x.match_type,opponent:x.opponent,goalsFor:x.team_goals,goalsAgainst:x.opponent_goals,events:[]});
-      (a.data||[]).forEach(x=>byMatch[x.match_id]?.events.push({playerId:x.player_id,type:'app'}));
-      (g.data||[]).forEach(x=>byMatch[x.match_id]?.events.push({playerId:x.player_id,type:'goal'}));
-      db={...db,league:(t.data||[]).map(x=>x.name),players:(p.data||[]).map(x=>({id:x.id,name:x.name,number:x.number??'',position:x.position||''})),matches:Object.values(byMatch)};
-      localStorage.setItem(KEY,JSON.stringify(db));
-    }
-    render();setSyncStatus('✓ Synchronisiert');
-  }catch(e){console.error(e);setSyncStatus('Offline – lokaler Stand wird verwendet')}
-}
-async function openLogin(){
-  if(!supabase)return alert('Bitte zuerst supabase-config.js ausfüllen.');
-  openModal(`<h2>Anmelden</h2><label>E-Mail</label><input id="loginEmail" type="email" autocomplete="email"><label>Passwort</label><input id="loginPassword" type="password" autocomplete="current-password"><div class="actions" style="margin-top:15px"><button class="primary" onclick="login()">Anmelden</button><button onclick="closeModal()">Abbrechen</button></div>`);
-}
-async function login(){
-  const email=document.getElementById('loginEmail').value.trim(),password=document.getElementById('loginPassword').value;
-  const {error}=await supabase.auth.signInWithPassword({email,password});
-  if(error)return alert(error.message);
-  closeModal();await loadFromSupabase();render();
-}
-async function logout(){if(supabase){await supabase.auth.signOut();setSyncStatus('Abgemeldet')}}
-window.addEventListener('online',()=>{setSyncStatus('Online – synchronisiere …');scheduleSync()});
-window.addEventListener('offline',()=>setSyncStatus('Offline – lokaler Stand aktiv'));
-const KEY=
-function esc(s){return String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
-function initials(n){return n.split(/\s+/).map(x=>x[0]).join('').slice(0,2).toUpperCase()}
-function showPage(p){document.querySelectorAll('main>section').forEach(x=>x.classList.add('hidden'));document.getElementById(p).classList.remove('hidden');document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.page===p));render()}
-function render(){document.getElementById('teamName').textContent=db.teamName;document.getElementById('seasonText').textContent='Saison '+db.season;renderDash();renderPlayers();renderMatches();renderLeague()}
-function stats(){let apps=0,goals=0;db.matches.forEach(m=>{m.events?.forEach(e=>{if(e.playerId){if(e.type==='app')apps++;if(e.type==='goal')goals++}})});return{apps,goals,players:db.players.length,matches:db.matches.length}}
-function renderDash(){let s=stats(), recent=[...db.matches].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,4);document.getElementById('dashboard').innerHTML=`
-<h1>Übersicht</h1><div class="grid grid3">
-<div class="card"><div class="stat">${s.players}</div><div class="label">Spieler</div></div><div class="card"><div class="stat">${s.matches}</div><div class="label">Spiele</div></div><div class="card"><div class="stat">${s.goals}</div><div class="label">Tore</div></div></div>
-<div class="card"><div class="row"><div><h2>Schnellstart</h2><div class="sub">Daten werden automatisch auf diesem iPhone gespeichert.</div></div><button class="primary" onclick="openMatch()">+ Spiel</button></div></div>
-<div class="card"><h2>Letzte Spiele</h2>${recent.length?'<div class="list">'+recent.map(matchHTML).join('')+'</div>':'<div class="empty">Noch keine Spiele erfasst.</div>'}</div>`}
-function renderPlayers(){let rows=db.players.map(p=>{let a=0,g=0;db.matches.forEach(m=>(m.events||[]).filter(e=>e.playerId===p.id).forEach(e=>e.type==='goal'?g++:e.type==='app'&&(a++)));return {p,a,g}}).sort((x,y)=>y.g-x.g||y.a-x.a);document.getElementById('players').innerHTML=`
-<div class="row"><div><h1>Spieler</h1><div class="sub">${db.players.length} Kaderplätze</div></div><button class="primary" onclick="openPlayer()">+ Spieler</button></div>
-<div class="card">${rows.length?'<div class="list">'+rows.map(x=>`<div class="item player"><div class="avatar">${initials(x.p.name)}</div><div class="grow"><b class="truncate">${esc(x.p.name)}</b><div class="sub">${esc(x.p.position||'Keine Position')} · ${x.a} Einsätze · ${x.g} Tore</div></div><button class="secondary" onclick="openPlayer('${x.p.id}')">Bearbeiten</button></div>`).join('')+'</div>':'<div class="empty">Lege den ersten Spieler an.</div>'}</div>`}
-function matchHTML(m){let result=m.goalsFor!=null?`${m.goalsFor}:${m.goalsAgainst}`:'–';return `<div class="item"><div class="row"><div><b>${m.type==='league'?'Liga':m.type==='cup'?'Pokal':'Test'}</b><div>${esc(m.opponent)} <span class="pill">${result}</span></div><div class="sub">${new Date(m.date+'T12:00').toLocaleDateString('de-DE')}</div></div><button class="secondary" onclick="openMatch('${m.id}')">Details</button></div></div>`}
-function renderMatches(){let types=['all','league','cup','test'];let active=window.mt||'all';let arr=[...db.matches].sort((a,b)=>b.date.localeCompare(a.date)).filter(m=>active==='all'||m.type===active);document.getElementById('matches').innerHTML=`
-<div class="row"><div><h1>Spiele</h1><div class="sub">Liga, Pokal und Tests</div></div><button class="primary" onclick="openMatch()">+ Spiel</button></div>
-<div class="tabs">${types.map(t=>`<button class="${active===t?'on':''}" onclick="window.mt='${t}';renderMatches()">${t==='all'?'Alle':t==='league'?'Liga':t==='cup'?'Pokal':'Tests'}</button>`).join('')}</div>
-<div class="card">${arr.length?'<div class="list">'+arr.map(matchHTML).join('')+'</div>':'<div class="empty">Keine Spiele in dieser Kategorie.</div>'}</div>`}
-function leagueStats(){let t=db.league.map((name,i)=>({name,sp:0,w:0,d:0,l:0,gf:0,ga:0,pts:0}));db.matches.filter(m=>m.type==='league'&&m.goalsFor!=null).forEach(m=>{let i=t.findIndex(x=>x.name===m.opponent);if(i<0)return;let me={gf:+m.goalsFor,ga:+m.goalsAgainst};t[i].sp++;t[i].gf+=me.ga;t[i].ga+=me.gf;if(me.gf>me.ga)t[i].w++;else if(me.gf===me.ga)t[i].d++;else t[i].l++;t[i].pts+=me.gf<me.ga?3:me.gf===me.ga?1:0});return t.map((x,i)=>({...x,rank:i+1})).sort((a,b)=>b.pts-a.pts||(b.gf-b.ga)-(a.gf-a.ga)||b.gf-a.gf)}
-function renderLeague(){let tab=window.lt||'table';document.getElementById('league').innerHTML=`
-<h1>Liga</h1><div class="tabs"><button class="${tab==='table'?'on':''}" onclick="window.lt='table';renderLeague()">Tabelle</button><button class="${tab==='teams'?'on':''}" onclick="window.lt='teams';renderLeague()">Teams</button></div>
-<div class="card">${tab==='table'?`<table><thead><tr><th>#</th><th>Team</th><th>Sp</th><th>+/-</th><th>Pkt</th></tr></thead><tbody>${leagueStats().map((x,i)=>`<tr><td>${i+1}</td><td><b>${esc(x.name)}</b></td><td>${x.sp}</td><td>${x.gf-x.ga}</td><td><b>${x.pts}</b></td></tr>`).join('')}</tbody></table>`:`<div class="list">${db.league.map((x,i)=>`<div class="item row"><b>${i+1}. ${esc(x)}</b><button class="secondary" onclick="editTeam(${i})">Bearbeiten</button></div>`).join('')}</div>`}</div>`}
-function openModal(html){document.getElementById('sheet').innerHTML=html;document.getElementById('modal').classList.remove('hidden')}function closeModal(){document.getElementById('modal').classList.add('hidden')}
-function openSettings(){openModal(`<h2>Einstellungen</h2><label>Teamname</label><input id="sname" value="${esc(db.teamName)}"><label>Saison</label><input id="sseason" value="${esc(db.season)}"><div class="actions" style="margin-top:15px"><button class="primary" onclick="db.teamName=document.getElementById('sname').value||'Mein Fußballteam';db.season=document.getElementById('sseason').value||'';save();closeModal()">Speichern</button><button class="secondary" onclick="syncToSupabase()">Jetzt synchronisieren</button><button class="secondary" onclick="logout()">Abmelden</button><button class="danger" onclick="if(confirm('Alle Daten löschen?')){db=structuredClone(initial);save();closeModal()}">Alles löschen</button></div>`)}
-function openPlayer(id){let p=db.players.find(x=>x.id===id)||{id:crypto.randomUUID(),name:'',position:'',number:''};openModal(`<h2>${id?'Spieler bearbeiten':'Neuer Spieler'}</h2><label>Name</label><input id="pn" value="${esc(p.name)}" placeholder="Vor- und Nachname"><div class="formgrid"><div><label>Nummer</label><input id="pno" inputmode="numeric" value="${esc(p.number)}"></div><div><label>Position</label><select id="pp"><option ${p.position==='Torwart'?'selected':''}>Torwart</option><option ${p.position==='Abwehr'?'selected':''}>Abwehr</option><option ${p.position==='Mittelfeld'?'selected':''}>Mittelfeld</option><option ${p.position==='Angriff'?'selected':''}>Angriff</option></select></div></div><div class="actions" style="margin-top:15px"><button class="primary" onclick="savePlayer('${p.id}')">Speichern</button>${id?`<button class="danger" onclick="deletePlayer('${p.id}')">Löschen</button>`:''}<button onclick="closeModal()">Abbrechen</button></div>`)}
-function savePlayer(id){let name=document.getElementById('pn').value.trim();if(!name)return alert('Bitte einen Namen eingeben.');let p=db.players.find(x=>x.id===id);if(p){p.name=name;p.number=document.getElementById('pno').value;p.position=document.getElementById('pp').value}else db.players.push({id,name,number:document.getElementById('pno').value,position:document.getElementById('pp').value});save();closeModal()}
-function deletePlayer(id){if(confirm('Spieler löschen?')){db.players=db.players.filter(p=>p.id!==id);db.matches.forEach(m=>m.events=(m.events||[]).filter(e=>e.playerId!==id));save();closeModal()}}
-function openMatch(id){let m=db.matches.find(x=>x.id===id)||{id:crypto.randomUUID(),date:new Date().toISOString().slice(0,10),type:'league',opponent:'',goalsFor:'',goalsAgainst:'',events:[]};let eventCounts={};(m.events||[]).forEach(e=>eventCounts[e.playerId]=(eventCounts[e.playerId]||0)+(e.type==='goal'?100:1));openModal(`<h2>${id?'Spiel bearbeiten':'Neues Spiel'}</h2><div class="formgrid"><div><label>Datum</label><input id="md" type="date" value="${m.date}"></div><div><label>Art</label><select id="mt"><option value="league" ${m.type==='league'?'selected':''}>Liga</option><option value="cup" ${m.type==='cup'?'selected':''}>Pokal</option><option value="test" ${m.type==='test'?'selected':''}>Test</option></select></div><div class="full"><label>Gegner</label><input id="mo" value="${esc(m.opponent)}"></div><div><label>Eigene Tore</label><input id="gf" type="number" min="0" inputmode="numeric" value="${m.goalsFor}"></div><div><label>Gegentore</label><input id="ga" type="number" min="0" inputmode="numeric" value="${m.goalsAgainst}"></div></div><label>Spieler-Einsätze und Tore</label><div class="list">${db.players.length?db.players.map(p=>`<div class="item row"><div class="grow"><b>${esc(p.name)}</b><div class="sub">${p.position||''}</div></div><button class="secondary" onclick="toggleEvent('${m.id}','${p.id}','app',this)">${(m.events||[]).some(e=>e.playerId===p.id&&e.type==='app')?'✓ Einsatz':'+ Einsatz'}</button><button class="secondary" onclick="toggleEvent('${m.id}','${p.id}','goal',this)">${(m.events||[]).filter(e=>e.playerId===p.id&&e.type==='goal').length} ⚽</button></div>`).join(''):'<div class="empty">Erst Spieler anlegen.</div>'}</div><div class="actions" style="margin-top:15px"><button class="primary" onclick="saveMatch('${m.id}')">Speichern</button>${id?`<button class="danger" onclick="deleteMatch('${m.id}')">Löschen</button>`:''}<button onclick="closeModal()">Abbrechen</button></div>`)}
-function toggleEvent(mid,pid,type,btn){let m=db.matches.find(x=>x.id===mid);if(!m){m={id:mid,events:[]};db.matches.push(m)}m.events=m.events||[];if(type==='app'){let i=m.events.findIndex(e=>e.playerId===pid&&e.type==='app');i>=0?m.events.splice(i,1):m.events.push({playerId:pid,type})}else{m.events.push({playerId:pid,type})}openMatch(mid)}
-function saveMatch(id){let m=db.matches.find(x=>x.id===id);let data={id,date:document.getElementById('md').value,type:document.getElementById('mt').value,opponent:document.getElementById('mo').value.trim()||'Unbekannt',goalsFor:document.getElementById('gf').value===''?null:+document.getElementById('gf').value,goalsAgainst:document.getElementById('ga').value===''?null:+document.getElementById('ga').value,events:m?.events||[]};if(m)Object.assign(m,data);else db.matches.push(data);save();closeModal()}
-function deleteMatch(id){if(confirm('Spiel löschen?')){db.matches=db.matches.filter(m=>m.id!==id);save();closeModal()}}
-function editTeam(i){openModal(`<h2>Ligateam bearbeiten</h2><label>Teamname</label><input id="tn" value="${esc(db.league[i])}"><div class="actions" style="margin-top:15px"><button class="primary" onclick="db.league[${i}]=document.getElementById('tn').value||'Team ${i+1}';save();closeModal()">Speichern</button><button onclick="closeModal()">Abbrechen</button></div>`)}
-render();
-(async()=>{if(supabase){const {data:{session}}=await supabase.auth.getSession();if(session)await loadFromSupabase();else setSyncStatus('Bitte anmelden')}})();
 </script>
-<script>if ("serviceWorker" in navigator) window.addEventListener("load",()=>navigator.serviceWorker.register("./sw.js"));</script>
 </body>
 </html>
