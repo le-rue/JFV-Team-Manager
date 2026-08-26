@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0b1220">
-<link rel="manifest" href="manifest.webmanifest">
+<link rel="manifest" href="manifest.webmanifest?v=7">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Team Manager">
-<link rel="apple-touch-icon" sizes="180x180" href="./icon-180.png">
+<link rel="apple-touch-icon" sizes="180x180" href="./icon-180.png?v=7">
 <title>Team Manager</title>
 <style>
 :root{--bg:#f4f6f8;--card:#fff;--text:#101828;--muted:#667085;--line:#e4e7ec;--accent:#176b4d;--accent2:#0d5139;--danger:#c62828;--shadow:0 8px 28px #10182812}
@@ -16,7 +16,7 @@
 header{position:sticky;top:0;z-index:5;padding:calc(12px + env(safe-area-inset-top)) 16px 12px;background:#0b1220;color:#fff}
 .head{max-width:900px;margin:auto;display:flex;align-items:center;justify-content:space-between;gap:12px}.brand{font-size:21px;font-weight:800}.season{font-size:12px;color:#b9c4d3}
 main{max-width:900px;margin:auto;padding:16px 14px calc(90px + env(safe-area-inset-bottom))}
-.nav{position:fixed;z-index:10;bottom:0;left:0;right:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom));background:#ffffffeb;backdrop-filter:blur(16px);border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(4,1fr)}
+.nav{position:fixed;z-index:10;bottom:0;left:0;right:0;padding:8px 8px calc(8px + env(safe-area-inset-bottom));background:#ffffffeb;backdrop-filter:blur(16px);border-top:1px solid var(--line);display:grid;grid-template-columns:repeat(5,1fr)}
 .nav button{border:0;background:none;color:var(--muted);font-size:11px;padding:6px 2px}.nav button b{display:block;font-size:20px;line-height:22px}.nav button.active{color:var(--accent);font-weight:700}
 h1{font-size:28px;margin:4px 0 16px}h2{font-size:18px;margin:0 0 12px}.sub{color:var(--muted);font-size:13px}
 .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.grid3{grid-template-columns:repeat(3,1fr)}
@@ -27,33 +27,35 @@ input,select{width:100%;border:1px solid #d0d5dd;border-radius:11px;padding:12px
 .formgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.full{grid-column:1/-1}
 .tabs{display:flex;gap:7px;overflow:auto;margin-bottom:12px}.tabs button{white-space:nowrap;background:#e9edf1;color:#475467}.tabs button.on{background:var(--accent);color:#fff}
 .list{display:flex;flex-direction:column;gap:8px}.item{background:#fff;border:1px solid var(--line);border-radius:13px;padding:12px}.avatar{width:42px;height:42px;border-radius:50%;background:#e5f1ec;color:var(--accent);display:grid;place-items:center;font-weight:800;flex:none}
-.player{display:flex;align-items:center;gap:10px}.grow{flex:1;min-width:0}.truncate{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef4f1;color:var(--accent);font-size:11px;font-weight:700}
+.player{display:flex;align-items:center;gap:10px}.numberball{width:42px;height:42px;border-radius:50%;background:#e5f1ec;color:var(--accent);display:grid;place-items:center;font-weight:800;flex:none}.match-title{font-size:16px;font-weight:800;display:flex;align-items:baseline;justify-content:space-between;gap:10px}.score{font-size:22px;font-weight:900;white-space:nowrap}.scorers{margin-top:5px;color:#475467;font-size:12px;line-height:1.35}.rank{width:28px;font-weight:800;color:var(--muted)}.fixture-meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}.fixture-meta span{font-size:12px;color:var(--muted)}.goal-controls{display:flex;gap:6px;align-items:center}.goal-count{min-width:28px;text-align:center;font-weight:800}.league-table-wrap{overflow-x:auto;margin:0 -5px}.league-table{min-width:650px}.league-table th:not(:nth-child(2)),.league-table td:not(:nth-child(2)){text-align:center}.league-table td:nth-child(2){font-weight:700}.league-table tr.mine{background:#eef4f1}.league-score{display:grid;grid-template-columns:1fr 38px 12px 38px;gap:5px;align-items:center}.league-score input{height:38px;min-height:38px;padding:0 5px;text-align:center;font-weight:800}.league-score .teams{font-size:13px;line-height:1.25}.round-head{font-size:15px;font-weight:800;margin:4px 0 10px}.score-dash{text-align:center;font-weight:800;color:var(--muted)}.grow{flex:1;min-width:0}.truncate{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pill{display:inline-block;padding:4px 8px;border-radius:999px;background:#eef4f1;color:var(--accent);font-size:11px;font-weight:700}
 table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:9px 5px;border-bottom:1px solid var(--line)}th{color:var(--muted);font-size:11px}
 .empty{text-align:center;color:var(--muted);padding:30px 10px}.hidden{display:none!important}.modal{position:fixed;inset:0;background:#0008;z-index:30;display:flex;align-items:flex-end}.sheet{background:#fff;width:100%;max-height:90vh;overflow:auto;border-radius:22px 22px 0 0;padding:18px 16px calc(25px + env(safe-area-inset-bottom));animation:up .2s ease}@keyframes up{from{transform:translateY(100%)}to{transform:none}}
 @media(min-width:700px){.nav{position:static;max-width:900px;margin:0 auto 0;background:transparent;border:0;backdrop-filter:none;padding:8px}.nav button{background:#fff;border-radius:10px}.modal{align-items:center}.sheet{max-width:560px;border-radius:20px}}
 </style>
 </head>
 <body>
-<header><div class="head"><div><div class="brand" id="teamName">Mein Fußballteam</div><div class="season" id="seasonText">Saison 2026/27 · <span id="syncStatus">Lokal</span></div></div><div class="actions"><button class="secondary" onclick="openLogin()">👤</button><button class="secondary" onclick="openSettings()">⚙️</button></div></div></header>
+<header><div class="head"><div><div class="brand" id="teamName">JFV Neuseenland</div><div class="season" id="seasonText">Saison 2026/27 · <span id="syncStatus">Lokal</span></div></div><div class="actions"><button class="secondary" onclick="openLogin()">👤</button><button class="secondary" onclick="openSettings()">⚙️</button></div></div></header>
 <main>
 <section id="dashboard"></section>
 <section id="players" class="hidden"></section>
 <section id="matches" class="hidden"></section>
+<section id="scorers" class="hidden"></section>
 <section id="league" class="hidden"></section>
 </main>
 <nav class="nav">
 <button data-page="dashboard" class="active" onclick="showPage('dashboard')"><b>⌂</b>Übersicht</button>
-<button data-page="players" onclick="showPage('players')"><b>⚽</b>Spieler</button>
+<button data-page="players" onclick="showPage('players')"><b>👤</b>Spieler</button>
 <button data-page="matches" onclick="showPage('matches')"><b>📅</b>Spiele</button>
+<button data-page="scorers" onclick="showPage('scorers')"><b>⚽</b>Torschützen</button>
 <button data-page="league" onclick="showPage('league')"><b>🏆</b>Liga</button>
 </nav>
 <div id="modal" class="modal hidden" onclick="if(event.target===this)closeModal()"><div class="sheet" id="sheet"></div></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-<script src="./supabase-config.js"></script>
-<script src="./app.js"></script>
+<script src="./supabase-config.js?v=7"></script>
+<script src="./app.js?v=7"></script>
 <script>
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(console.error));
+  window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js?v=7").catch(console.error));
 }
 </script>
 </body>
