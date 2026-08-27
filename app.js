@@ -2,7 +2,7 @@
 
 /* Team Manager PWA – Offline-first Supabase client
    - local-first writes
-   - per-user local storage
+   - shared team workspace for authenticated users
    - durable mutation queue
    - optimistic concurrency via server-side version
    - conflict log with explicit restore option
@@ -168,6 +168,17 @@ function ensureLeagueData(queueMissing=false){
       if(!db.meta.teams?.[r.id] && !queue.some(q=>q.table==='teams'&&q.recordId===r.id)) enqueue('teams','upsert',r.id,r);
     }
   }
+  // Older per-user versions could have generated duplicate league seeds. Keep one
+  // canonical local row per fixture/matchday, preferring pending edits, results and server-known rows.
+  const prefer=(a,b,table)=>{
+    const score=x=>(queue.some(q=>q.table===table&&q.recordId===x.id)?1000:0)+((x.homeGoals!=null||x.goalsFor!=null)?100:0)+((x.events||[]).length*10)+(db.meta?.[table]?.[x.id]?.version||0);
+    return score(a)>=score(b)?a:b;
+  };
+  const lg=new Map();for(const g of db.leagueGames||[]){if(!g.fixtureKey)continue;lg.set(g.fixtureKey,lg.has(g.fixtureKey)?prefer(lg.get(g.fixtureKey),g,'league_games'):g)}
+  db.leagueGames=[...lg.values()];
+  const otherMatches=db.matches.filter(m=>!(m.type==='league'&&m.matchday));
+  const lm=new Map();for(const m of db.matches.filter(m=>m.type==='league'&&m.matchday)){lm.set(m.matchday,lm.has(m.matchday)?prefer(lm.get(m.matchday),m,'matches'):m)}
+  db.matches=[...otherMatches,...lm.values()];
   reconcileJfvResults();
   persist();
 }
@@ -188,7 +199,7 @@ function reconcileJfvResults(){
 async function getSession(){if(!supabaseClient)return null;const {data,error}=await supabaseClient.auth.getSession();if(error)throw error;return data.session}
 function withUser(payload,userId){const {updated_at,version,deleted_at,...clean}=payload||{};return {...clean,user_id:userId,device_id:deviceId,deleted_at:null}}
 async function fetchRemoteRow(op,userId){
-  const {data,error}=await supabaseClient.from(op.table).select('*').eq('id',op.recordId).eq('user_id',userId).maybeSingle();
+  const {data,error}=await supabaseClient.from(op.table).select('*').eq('id',op.recordId).maybeSingle();
   if(error)throw error; return data;
 }
 function rememberMeta(table,row){db.meta[table]=db.meta[table]||{};db.meta[table][row.id]={version:Number(row.version||0),updated_at:row.updated_at||null,deleted_at:row.deleted_at||null,sort_order:row.sort_order??null}}
@@ -228,7 +239,7 @@ async function applyRemoteToLocal(table,row){
 }
 
 async function guardedUpdate(op,userId,changes,expectedVersion){
-  let q=supabaseClient.from(op.table).update(changes).eq('id',op.recordId).eq('user_id',userId);
+  let q=supabaseClient.from(op.table).update(changes).eq('id',op.recordId);
   if(expectedVersion>0) q=q.eq('version',expectedVersion);
   const {data,error}=await q.select('*').maybeSingle();
   if(error)throw error;
@@ -272,7 +283,8 @@ async function pushOperation(op,userId){
     await applyRemoteToLocal(op.table,data);return 'drop';
   }
 
-  const written=await guardedUpdate(op,userId,row,baseVersion);
+  const {user_id,...updateRow}=row;
+  const written=await guardedUpdate(op,userId,updateRow,baseVersion);
   if(!written){
     const latest=await fetchRemoteRow(op,userId);recordConflict(op,latest,'race_during_update');if(latest)await applyRemoteToLocal(op.table,latest);return 'drop';
   }
@@ -280,7 +292,7 @@ async function pushOperation(op,userId){
 }
 
 async function pullTable(table,userId){
-  const {data,error}=await supabaseClient.from(table).select('*').eq('user_id',userId);
+  const {data,error}=await supabaseClient.from(table).select('*');
   if(error)throw error;
   for(const row of (data||[])){
     const pending=queue.find(q=>q.table===table&&q.recordId===row.id);
@@ -309,7 +321,7 @@ async function syncAll(){
   if(!navigator.onLine){setSyncStatus(`Offline · ${queue.length} Änderung${queue.length===1?'':'en'} wartet`);return}
   let session;try{session=await getSession()}catch(e){console.error(e);setSyncStatus('Verbindung fehlgeschlagen');return}
   if(!session){setSyncStatus('Bitte anmelden');return}
-  if(ownerKey!==session.user.id) switchUserContext(session.user);
+  if(ownerKey!=='shared') switchUserContext(session.user);
   syncing=true;setSyncStatus(`Synchronisiere · ${queue.length} offen`);
   try{
     queue.sort((a,b)=>queuePriority(a)-queuePriority(b));
@@ -325,7 +337,18 @@ async function syncAll(){
 
 function switchUserContext(user){
   currentUserId=user?.id||null;currentUserEmail=user?.email||'';
-  loadNamespace(currentUserId||'guest');
+  if(currentUserId){
+    // All authenticated team members work on one shared local cache. On first use,
+    // carry over this account's previous per-user cache so an update loses nothing.
+    const sharedKey=nsKey(DATA_PREFIX,'shared');
+    const oldUserKey=nsKey(DATA_PREFIX,currentUserId);
+    if(!localStorage.getItem(sharedKey) && localStorage.getItem(oldUserKey)){
+      localStorage.setItem(sharedKey,localStorage.getItem(oldUserKey));
+      const oq=localStorage.getItem(nsKey(QUEUE_PREFIX,currentUserId));if(oq)localStorage.setItem(nsKey(QUEUE_PREFIX,'shared'),oq);
+      const oc=localStorage.getItem(nsKey(CONFLICT_PREFIX,currentUserId));if(oc)localStorage.setItem(nsKey(CONFLICT_PREFIX,'shared'),oc);
+    }
+    loadNamespace('shared');
+  } else loadNamespace('guest');
   render();
 }
 async function initialPull(){
@@ -345,9 +368,9 @@ async function openLogin(){
   if(!supabaseClient)return alert('Bitte zuerst supabase-config.js mit Project URL und Publishable Key ausfüllen.');
   const session=await getSession().catch(()=>null);
   if(session){
-    openModal(`<h2>Angemeldet</h2><div class="card"><b>${esc(session.user.email||'Benutzer')}</b><div class="sub">Lokale Daten sind diesem Konto getrennt zugeordnet.</div></div><div class="actions"><button class="secondary" onclick="syncAll()">Jetzt synchronisieren</button><button class="danger" onclick="logout()">Abmelden</button><button onclick="closeModal()">Schließen</button></div>`);return;
+    openModal(`<h2>Angemeldet</h2><div class="card"><b>${esc(session.user.email||'Benutzer')}</b><div class="sub">Du arbeitest am gemeinsamen JFV-Teamdatenbestand.</div></div><div class="actions"><button class="secondary" onclick="syncAll()">Jetzt synchronisieren</button><button class="danger" onclick="logout()">Abmelden</button><button onclick="closeModal()">Schließen</button></div>`);return;
   }
-  openModal(`<h2>Anmelden</h2><label>E-Mail</label><input id="loginEmail" type="email" autocomplete="email"><label>Passwort</label><input id="loginPassword" type="password" autocomplete="current-password"><div class="actions" style="margin-top:15px"><button class="primary" onclick="login()">Anmelden</button><button class="secondary" onclick="signup()">Konto anlegen</button><button onclick="closeModal()">Abbrechen</button></div><div class="sub" style="margin-top:12px">Ohne Anmeldung bleibt die App lokal nutzbar. Gastdaten werden niemals automatisch einem anderen Konto zugeordnet.</div>`)
+  openModal(`<h2>Anmelden</h2><label>E-Mail</label><input id="loginEmail" type="email" autocomplete="email"><label>Passwort</label><input id="loginPassword" type="password" autocomplete="current-password"><div class="actions" style="margin-top:15px"><button class="primary" onclick="login()">Anmelden</button><button onclick="closeModal()">Abbrechen</button></div><div class="sub" style="margin-top:12px">Teamkonten werden zentral angelegt. Ohne Anmeldung bleibt die App nur lokal nutzbar.</div>`)
 }
 async function login(){
   const email=document.getElementById('loginEmail').value.trim(),password=document.getElementById('loginPassword').value;
@@ -369,7 +392,7 @@ function importGuestData(){
   const raw=localStorage.getItem(nsKey(DATA_PREFIX,'guest'));if(!raw)return alert('Keine Gastdaten gefunden.');
   let guest;try{guest=JSON.parse(raw)}catch{return alert('Gastdaten sind nicht lesbar.');}
   normalizeLocal(guest);if(!hasMeaningfulData(guest))return alert('Keine relevanten Gastdaten vorhanden.');
-  if(!confirm('Gastdaten in dieses Konto übernehmen? Vorhandene lokale Kontodaten werden dabei ersetzt.'))return;
+  if(!confirm('Gastdaten in den gemeinsamen Teamdatenbestand übernehmen? Der lokale Stand wird dabei als Änderungen synchronisiert.'))return;
   db=guest;db.meta=clone(initial.meta);normalizeLocal(db);queue=[];conflicts=[];
   touchAllTeams();db.players.forEach(touchPlayer);db.matches.forEach(touchMatch);(db.leagueGames||[]).forEach(touchLeagueGame);persist();render();scheduleSync();closeModal();
 }
@@ -397,7 +420,13 @@ function dateDE(d){return d?new Date(d+'T12:00').toLocaleDateString('de-DE'):'�
 function typeName(t){return t==='league'?'Liga':t==='cup'?'Pokal':'Test'}
 function render(){document.getElementById('teamName').textContent=db.teamName;const s=document.getElementById('seasonText');s.firstChild.textContent='Saison '+db.season+' · ';renderDash();renderPlayers();renderMatches();renderScorers();renderLeague()}
 function stats(){let goals=0;db.matches.forEach(m=>(m.events||[]).forEach(e=>{if(e.type==='goal')goals++}));return{players:db.players.length,matches:db.matches.filter(m=>m.goalsFor!=null&&m.goalsAgainst!=null).length,goals}}
-function renderDash(){let s=stats(),recent=[...db.matches].filter(m=>m.goalsFor!=null&&m.goalsAgainst!=null).sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,4);document.getElementById('dashboard').innerHTML=`<h1>Übersicht</h1><div class="grid grid3"><div class="card"><div class="stat">${s.players}</div><div class="label">Spieler</div></div><div class="card"><div class="stat">${s.matches}</div><div class="label">gespielt</div></div><div class="card"><div class="stat">${s.goals}</div><div class="label">Tore</div></div></div><div class="card"><div class="row"><div><h2>Offline-First</h2><div class="sub">${queue.length} lokale Änderung${queue.length===1?'':'en'} in der Warteschlange.</div></div><button class="primary" onclick="openMatch()">+ Spiel</button></div></div><div class="card"><h2>Letzte Spiele</h2>${recent.length?'<div class="list">'+recent.map(matchHTML).join('')+'</div>':'<div class="empty">Noch kein Ergebnis eingetragen.</div>'}</div>`}
+function renderDash(){
+  let s=stats(),today=new Date().toISOString().slice(0,10);
+  let upcoming=[...db.matches].filter(m=>(m.date||'')>=today&&(m.goalsFor==null||m.goalsAgainst==null)).sort((a,b)=>(a.date||'').localeCompare(b.date||''))[0];
+  let recent=[...db.matches].filter(m=>m.goalsFor!=null&&m.goalsAgainst!=null).sort((a,b)=>(b.date||'').localeCompare(a.date||'')).slice(0,4);
+  const nextHtml=upcoming?`<div class="item"><div class="match-title"><span>${esc(upcoming.opponent||'Unbekannt')}</span><span class="pill">${upcoming.homeAway==='away'?'Auswärts':'Heim'}</span></div><div class="fixture-meta"><span>${typeName(upcoming.type)}${upcoming.matchday?' · '+upcoming.matchday+'. Spieltag':''}</span><span>· ${dateDE(upcoming.date)}</span></div><div class="actions" style="margin-top:8px;justify-content:flex-end"><button class="secondary" onclick="openMatch('${upcoming.id}')">Details</button></div></div>`:'<div class="empty">Kein weiteres Spiel geplant.</div>';
+  document.getElementById('dashboard').innerHTML=`<h1>Übersicht</h1><div class="grid grid3"><div class="card"><div class="stat">${s.players}</div><div class="label">Spieler</div></div><div class="card"><div class="stat">${s.matches}</div><div class="label">gespielt</div></div><div class="card"><div class="stat">${s.goals}</div><div class="label">Tore</div></div></div><div class="card"><div class="row"><div><h2>Offline-First</h2><div class="sub">${queue.length} lokale Änderung${queue.length===1?'':'en'} in der Warteschlange.</div></div><button class="primary" onclick="openMatch()">+ Spiel</button></div></div><div class="card"><h2>Nächstes Spiel</h2>${nextHtml}</div><div class="card"><h2>Letzte Spiele</h2>${recent.length?'<div class="list">'+recent.map(matchHTML).join('')+'</div>':'<div class="empty">Noch kein Ergebnis eingetragen.</div>'}</div>`;
+}
 function playerStats(p){let a=0,g=0;db.matches.forEach(m=>{const ev=m.events||[];if(ev.some(e=>e.playerId===p.id&&e.type==='app'))a++;g+=ev.filter(e=>e.playerId===p.id&&e.type==='goal').length});return{a,g}}
 function renderPlayers(){let rows=db.players.map(p=>({p,...playerStats(p)})).sort((x,y)=>(parseInt(x.p.number)||999)-(parseInt(y.p.number)||999)||x.p.name.localeCompare(y.p.name,'de'));document.getElementById('players').innerHTML=`<div class="row"><div><h1>Spieler</h1><div class="sub">${db.players.length} Kaderplätze · nach Rückennummer sortiert</div></div><button class="primary" onclick="openPlayer()">+ Spieler</button></div><div class="card">${rows.length?'<div class="list">'+rows.map(x=>`<div class="item player"><div class="numberball">${esc(x.p.number||'–')}</div><div class="grow"><b class="truncate">${esc(x.p.number||'–')} · ${esc(x.p.name)}</b><div class="sub">${esc(x.p.position||'Keine Position')}</div><div class="sub">${x.a} Einsätze · ${x.g} Tore</div></div><button class="secondary" onclick="openPlayer('${x.p.id}')">Bearbeiten</button></div>`).join('')+'</div>':'<div class="empty">Lege den ersten Spieler an.</div>'}</div>`}
 function matchHTML(m){let result=m.goalsFor!=null&&m.goalsAgainst!=null?`${m.goalsFor}:${m.goalsAgainst}`:'–';let scorers=[];db.players.forEach(p=>{let n=(m.events||[]).filter(e=>e.type==='goal'&&e.playerId===p.id).length;if(n)scorers.push(`${p.name}${n>1?' ('+n+')':''}`)});return `<div class="item"><div class="match-title"><span>${esc(m.opponent||'Unbekannt')}</span><span class="score">${result}</span></div><div class="fixture-meta"><span>${typeName(m.type)}${m.matchday?' · '+m.matchday+'. Spieltag':''}</span><span>· ${dateDE(m.date)}</span>${m.type==='league'?`<span>· ${m.homeAway==='away'?'Auswärts':'Heim'}</span>`:''}</div><div class="scorers">${scorers.length?'Tore JFV: '+esc(scorers.join(', ')):'Keine Torschützen erfasst'}</div><div class="actions" style="margin-top:8px;justify-content:flex-end"><button class="secondary" onclick="openMatch('${m.id}')">Details</button></div></div>`}
@@ -406,12 +435,12 @@ function renderScorers(){let rows=db.players.map(p=>({p,...playerStats(p)})).fil
 function leagueStandings(){let rows=TEAMS.map(team=>({team,sp:0,w:0,d:0,l:0,gf:0,ga:0,gd:0,pts:0})),by=Object.fromEntries(rows.map(r=>[r.team,r]));(db.leagueGames||[]).filter(g=>g.homeGoals!=null&&g.awayGoals!=null).forEach(g=>{let h=by[g.home],a=by[g.away];if(!h||!a)return;let hg=+g.homeGoals,ag=+g.awayGoals;h.sp++;a.sp++;h.gf+=hg;h.ga+=ag;a.gf+=ag;a.ga+=hg;if(hg>ag){h.w++;a.l++;h.pts+=3}else if(hg<ag){a.w++;h.l++;a.pts+=3}else{h.d++;a.d++;h.pts++;a.pts++}});rows.forEach(r=>r.gd=r.gf-r.ga);return rows.sort((a,b)=>b.pts-a.pts||b.gd-a.gd||b.gf-a.gf||a.team.localeCompare(b.team,'de'))}
 function saveLeagueResult(id){let g=db.leagueGames.find(x=>x.id===id);if(!g)return;let hi=document.getElementById('lh'+id),ai=document.getElementById('la'+id);g.homeGoals=hi.value===''?null:+hi.value;g.awayGoals=ai.value===''?null:+ai.value;touchLeagueGame(g);const isJfv=g.home==='JFV Neuseenland'||g.away==='JFV Neuseenland';if(isJfv){let m=db.matches.find(x=>x.type==='league'&&x.matchday===g.matchday);if(m){if(g.home==='JFV Neuseenland'){m.goalsFor=g.homeGoals;m.goalsAgainst=g.awayGoals}else{m.goalsFor=g.awayGoals;m.goalsAgainst=g.homeGoals}touchMatch(m)}}save()}
 function clearLeagueResult(id){let g=db.leagueGames.find(x=>x.id===id);if(!g)return;g.homeGoals=null;g.awayGoals=null;touchLeagueGame(g);if(g.home==='JFV Neuseenland'||g.away==='JFV Neuseenland'){let m=db.matches.find(x=>x.type==='league'&&x.matchday===g.matchday);if(m){m.goalsFor=null;m.goalsAgainst=null;touchMatch(m)}}save()}
-function renderLeague(){let tab=window.lt||'table';let md=window.lmd||1;let standings=leagueStandings(),games=(db.leagueGames||[]).filter(g=>g.matchday===md);let tableHtml=`<div class="league-table-wrap"><table class="league-table"><thead><tr><th>Pl.</th><th>Mannschaft</th><th>Sp.</th><th>Tore</th><th>Diff.</th><th>Pkt.</th></tr></thead><tbody>${standings.map((r,i)=>`<tr class="${r.team==='JFV Neuseenland'?'mine':''}"><td>${i+1}</td><td>${esc(r.team)}</td><td>${r.sp}</td><td>${r.gf}:${r.ga}</td><td>${r.gd>0?'+':''}${r.gd}</td><td><b>${r.pts}</b></td></tr>`).join('')}</tbody></table></div><div class="sub" style="margin-top:10px">Sortierung: Punkte, Tordifferenz, erzielte Tore.</div>`;let scheduleHtml=`<div class="tabs">${Array.from({length:22},(_,i)=>`<button class="${md===i+1?'on':''}" onclick="window.lmd=${i+1};renderLeague()">${i+1}.</button>`).join('')}</div><div class="round-head">${md}. Spieltag · ${dateDE(FIXTURES.find(x=>x[3]===md)?.[0]||'')}</div><div class="list">${games.map(g=>`<div class="item"><div class="league-score"><div class="teams"><b>${esc(g.home)} – ${esc(g.away)}</b></div><input id="lh${g.id}" type="number" min="0" inputmode="numeric" value="${g.homeGoals??''}" aria-label="Tore ${esc(g.home)}"><span class="score-dash">:</span><input id="la${g.id}" type="number" min="0" inputmode="numeric" value="${g.awayGoals??''}" aria-label="Tore ${esc(g.away)}"></div><div class="actions" style="margin-top:8px;justify-content:flex-end"><button class="secondary" onclick="saveLeagueResult('${g.id}')">Ergebnis speichern</button>${g.homeGoals!=null||g.awayGoals!=null?`<button class="danger" onclick="clearLeagueResult('${g.id}')">Löschen</button>`:''}</div></div>`).join('')}</div>`;document.getElementById('league').innerHTML=`<h1>Liga</h1><div class="tabs"><button class="${tab==='table'?'on':''}" onclick="window.lt='table';renderLeague()">Tabelle</button><button class="${tab==='schedule'?'on':''}" onclick="window.lt='schedule';renderLeague()">Spieltage</button><button class="${tab==='teams'?'on':''}" onclick="window.lt='teams';renderLeague()">Teams</button></div><div class="card">${tab==='table'?tableHtml:tab==='schedule'?scheduleHtml:`<div class="list">${TEAMS.map((x,i)=>`<div class="item"><b>${i+1}. ${esc(x)}</b></div>`).join('')}</div>`}</div><div class="sub">Spielplanbasis: FUSSBALL.DE · Sachsenliga B-Junioren 2026/27.</div>`}
+function renderLeague(){let tab=window.lt||'table';let md=window.lmd||1;let standings=leagueStandings(),games=(db.leagueGames||[]).filter(g=>g.matchday===md);let tableHtml=`<div class="league-table-wrap"><table class="league-table"><thead><tr><th>Pl.</th><th>Mannschaft</th><th>Sp.</th><th>Tore</th><th>Diff.</th><th>Pkt.</th></tr></thead><tbody>${standings.map((r,i)=>`<tr class="${r.team==='JFV Neuseenland'?'mine':''}"><td>${i+1}</td><td>${esc(r.team)}</td><td>${r.sp}</td><td>${r.gf}:${r.ga}</td><td>${r.gd>0?'+':''}${r.gd}</td><td><b>${r.pts}</b></td></tr>`).join('')}</tbody></table></div><div class="sub" style="margin-top:10px">Sortierung: Punkte, Tordifferenz, erzielte Tore.</div>`;let scheduleHtml=`<div class="tabs league-round-tabs">${Array.from({length:22},(_,i)=>`<button class="${md===i+1?'on':''}" onclick="window.lmd=${i+1};renderLeague()">${i+1}.</button>`).join('')}</div><div class="round-head">${md}. Spieltag · ${dateDE(FIXTURES.find(x=>x[3]===md)?.[0]||'')}</div><div class="list">${games.map(g=>`<div class="item"><div class="league-score"><div class="teams"><b>${esc(g.home)} – ${esc(g.away)}</b></div><input id="lh${g.id}" type="number" min="0" inputmode="numeric" value="${g.homeGoals??''}" aria-label="Tore ${esc(g.home)}"><span class="score-dash">:</span><input id="la${g.id}" type="number" min="0" inputmode="numeric" value="${g.awayGoals??''}" aria-label="Tore ${esc(g.away)}"></div><div class="actions" style="margin-top:8px;justify-content:flex-end"><button class="secondary" onclick="saveLeagueResult('${g.id}')">Ergebnis speichern</button>${g.homeGoals!=null||g.awayGoals!=null?`<button class="danger" onclick="clearLeagueResult('${g.id}')">Löschen</button>`:''}</div></div>`).join('')}</div>`;document.getElementById('league').innerHTML=`<h1>Liga</h1><div class="tabs"><button class="${tab==='table'?'on':''}" onclick="window.lt='table';renderLeague()">Tabelle</button><button class="${tab==='schedule'?'on':''}" onclick="window.lt='schedule';renderLeague()">Spieltage</button><button class="${tab==='teams'?'on':''}" onclick="window.lt='teams';renderLeague()">Teams</button></div><div class="card">${tab==='table'?tableHtml:tab==='schedule'?scheduleHtml:`<div class="list">${TEAMS.map((x,i)=>`<div class="item"><b>${i+1}. ${esc(x)}</b></div>`).join('')}</div>`}</div><div class="sub">Spielplanbasis: FUSSBALL.DE · Sachsenliga B-Junioren 2026/27.</div>`}
 
 function openModal(html){document.getElementById('sheet').innerHTML=html;document.getElementById('modal').classList.remove('hidden')}function closeModal(){document.getElementById('modal').classList.add('hidden')}
 function openSettings(){
   let guestHas=false;try{const g=JSON.parse(localStorage.getItem(nsKey(DATA_PREFIX,'guest'))||'null');guestHas=g&&hasMeaningfulData(g)}catch{}
-  const account=currentUserId?`<div class="card"><b>${esc(currentUserEmail||'Angemeldet')}</b><div class="sub">Lokaler Speicher: getrennt für dieses Konto</div></div>`:`<div class="card"><b>Gastmodus</b><div class="sub">Daten bleiben nur auf diesem Gerät, bis du dich anmeldest.</div></div>`;
+  const account=currentUserId?`<div class="card"><b>${esc(currentUserEmail||'Angemeldet')}</b><div class="sub">Gemeinsamer Teamdatenbestand · individuelles Konto</div></div>`:`<div class="card"><b>Gastmodus</b><div class="sub">Daten bleiben nur auf diesem Gerät, bis du dich anmeldest.</div></div>`;
   openModal(`<h2>Einstellungen</h2>${account}<label>Teamname</label><input id="sname" value="${esc(db.teamName)}"><label>Saison</label><input id="sseason" value="${esc(db.season)}"><div class="sub" style="margin-top:12px">Queue: ${queue.length} · Konflikte: ${conflicts.length} · Gerät: ${esc(deviceId.slice(0,8))}</div><div class="actions" style="margin-top:15px"><button class="primary" onclick="saveSettings()">Speichern</button><button class="secondary" onclick="syncAll()">Jetzt synchronisieren</button><button class="secondary" onclick="showConflicts()">Konflikte</button>${currentUserId&&guestHas?`<button class="secondary" onclick="importGuestData()">Gastdaten übernehmen</button>`:''}${currentUserId?`<button class="danger" onclick="logout()">Abmelden</button>`:`<button class="secondary" onclick="openLogin()">Anmelden</button>`}</div>`)
 }
 function saveSettings(){db.teamName=document.getElementById('sname').value||'JFV Neuseenland';db.season=document.getElementById('sseason').value||'';save();closeModal()}
@@ -458,7 +487,7 @@ render();
   if(!supabaseClient){setSyncStatus('Supabase nicht konfiguriert');return}
   supabaseClient.auth.onAuthStateChange((_event,session)=>{
     setTimeout(()=>{
-      if(session){if(ownerKey!==session.user.id)switchUserContext(session.user);syncAll()}
+      if(session){if(ownerKey!=='shared')switchUserContext(session.user);syncAll()}
       else {if(ownerKey!=='guest')switchUserContext(null);ensureLeagueData(false);setSyncStatus('Bitte anmelden');render()}
     },0)
   });
